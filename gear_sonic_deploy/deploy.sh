@@ -208,6 +208,7 @@ show_usage() {
     echo "  --obs-config PATH       Set the observation config file (default: policy/configs/example.yaml)"
     echo "  --planner PATH          Set the planner model path (default: planner/example.onnx)"
     echo "  --motion-data PATH      Set the motion data path (default: reference/example_motion/)"
+    echo "  --dex1-internal         Use PICO triggers for internal Dex1 grippers (with zmq_manager or zmq)"
     echo "  --input-type TYPE       Set the input type (default: zmq_manager)"
     echo "  --output-type TYPE      Set the output type (default: ros2)"
     echo "  --zmq-host HOST         Set the ZMQ host (default: localhost)"
@@ -253,6 +254,7 @@ MOTION_DATA="$MOTION_DATA_DEFAULT"
 INPUT_TYPE="$INPUT_TYPE_DEFAULT"
 OUTPUT_TYPE="$OUTPUT_TYPE_DEFAULT"
 ZMQ_HOST="$ZMQ_HOST_DEFAULT"
+DEX1_INTERNAL=false
 MOTOR_KP_SCALES=()
 MOTOR_KD_SCALES=()
 
@@ -294,6 +296,10 @@ while [[ $# -gt 0 ]]; do
             fi
             MOTION_DATA="$2"
             shift 2
+            ;;
+        --dex1-internal)
+            DEX1_INTERNAL=true
+            shift
             ;;
         --input-type)
             if [[ -z "$2" ]]; then
@@ -401,6 +407,9 @@ CHECKPOINT_ENCODER="${CHECKPOINT}_encoder.onnx"
 
 # Additional flags for simulation mode
 EXTRA_ARGS=()
+if [[ "$DEX1_INTERNAL" == true ]]; then
+    EXTRA_ARGS+=("--dex1-internal")
+fi
 if [[ "$ENV_TYPE" == "sim" ]]; then
     EXTRA_ARGS+=("--disable-crc-check")
     echo -e "${YELLOW}📋 Simulation mode: CRC check will be disabled${NC}"

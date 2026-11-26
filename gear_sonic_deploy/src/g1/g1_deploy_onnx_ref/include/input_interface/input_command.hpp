@@ -69,6 +69,7 @@ struct CommandMessage {
  * detection (planner messages older than ~1 s are considered stale).
  */
 struct PlannerMessage {
+  std::optional<std::array<bool, 2>> trigger_grip;
   bool valid = false;  ///< True once this struct contains a successfully decoded message.
 
   /// Locomotion mode (cast of LocomotionMode enum). Defaults to IDLE.

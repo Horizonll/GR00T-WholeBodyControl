@@ -242,6 +242,7 @@ class ZMQManager : public InputInterface {
           ManagedMode new_mode = latest_command_.planner ? ManagedMode::PLANNER : ManagedMode::STREAMED_MOTION;
           
           if (new_mode != active_mode_) {
+            pico_grip_ = {};
             // Trigger safety reset on mode switch
             TriggerSafetyReset();
             if (pose_interface_) {
@@ -381,6 +382,11 @@ class ZMQManager : public InputInterface {
     }
 
     // Forward getters to pose interface when in streamed motion mode
+    PicoGrip GetPicoGrip() const override {
+      if (active_mode_ == ManagedMode::STREAMED_MOTION) return pose_interface_->GetPicoGrip();
+      return is_planner_ready_ ? pico_grip_ : PicoGrip{};
+    }
+
     bool HasVR3PointControl() const override {
       if ((active_mode_ == ManagedMode::STREAMED_MOTION || (!is_planner_ready_ && switch_from_teleop_to_planner_)) && pose_interface_) {
         return pose_interface_->HasVR3PointControl();
@@ -584,6 +590,8 @@ class ZMQManager : public InputInterface {
         
         if (latest_planner_message_.valid) {
           // Valid planner message within timeout - use it
+          const auto& grip = latest_planner_message_.trigger_grip;
+          pico_grip_ = grip ? PicoGrip{latest_planner_message_.timestamp, *grip} : PicoGrip{};
           // Update upper body control state based on this message
           has_upper_body_control_ = latest_planner_message_.upper_body_position.has_value();
 
@@ -799,6 +807,7 @@ class ZMQManager : public InputInterface {
       }
       
       PlannerMessage msg;
+      msg.trigger_grip = ZMQPackedMessageSubscriber::DecodeTriggerGrip(hdr, bufs);
       msg.valid = true;
       
       bool needs_swap = hdr.NeedsByteSwap();

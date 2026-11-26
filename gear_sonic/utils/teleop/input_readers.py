@@ -444,6 +444,7 @@ class IsaacTeleopReader:
                 continue
 
             controller = _build_controller_dict(raw)
+            input_time = time.monotonic()
             if controller is not None:
                 with self._ctrl_lock:
                     self._latest_controller = controller
@@ -472,7 +473,10 @@ class IsaacTeleopReader:
             sample = {
                 "body_poses_np": body_poses,
                 "timestamp_realtime": time.time(),
-                "timestamp_monotonic": time.monotonic(),
+                "timestamp_monotonic": input_time,
+                "triggers": (controller["left_trigger_value"], controller["right_trigger_value"])
+                if controller and "left_trigger_value" in controller and "right_trigger_value" in controller
+                else None,
                 "timestamp_ns": stamp_ns,
                 "dt": device_dt,
                 "fps": self._fps_ema,

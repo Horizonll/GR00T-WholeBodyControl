@@ -74,6 +74,7 @@ def build_planner_message(
     vr_3pt_position: Sequence[float] | None = None,
     vr_3pt_orientation: Sequence[float] | None = None,
     vr_3pt_compliance: Sequence[float] | None = None,
+    triggers: tuple[float, float] | None = None,
 ) -> bytes:
     """
     Assemble a 'planner' topic message:
@@ -152,6 +153,11 @@ def build_planner_message(
         fields.append({"name": "vr_compliance", "dtype": "f32", "shape": [len(vr_3pt_compliance)]})
         for value in vr_3pt_compliance:
             payload += struct.pack("<f", float(value))
+
+    if triggers is not None:
+        for name in ("left_trigger", "right_trigger"):
+            fields.append({"name": name, "dtype": "f32", "shape": [1]})
+        payload += struct.pack("<ff", *triggers)
 
     header = _build_header(fields, version=1, count=1)
 

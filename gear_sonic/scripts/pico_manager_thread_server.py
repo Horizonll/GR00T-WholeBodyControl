@@ -24,6 +24,7 @@
 
 from collections import defaultdict, deque
 from enum import Enum, IntEnum
+import math
 import os
 import subprocess
 import threading
@@ -489,6 +490,14 @@ def process_smpl_joints(body_pose, global_orient, transl):
     }
 
 
+def fresh_triggers(reader):
+    # Pose and hand IK may finish several input frames after they started.
+    sample = reader.get_latest()
+    if sample is not None and 0 <= time.monotonic() - sample.get("timestamp_monotonic", -math.inf) <= 0.15:
+        return sample.get("triggers")
+    return None
+
+
 def generate_finger_data(hand: str, trigger: float, grip: float) -> np.ndarray:
     """
     Generate finger position data from Pico controller button states.
@@ -614,16 +623,16 @@ def init_hand_ik_solvers():
 _ISAAC_TELEOP_READERS = (input_readers.IsaacTeleopReader,)
 
 
-def get_controller_inputs(reader=None):
+def get_controller_inputs(reader=None, missing_trigger=0.0):
     """Fetch controller button/trigger states from XRoboToolkit or IsaacCapture."""
     if isinstance(reader, _ISAAC_TELEOP_READERS):
         ctrl = reader.get_controller_data()
         if ctrl is None:
-            return False, 0.0, 0.0, 0.0, 0.0
+            return False, missing_trigger, missing_trigger, 0.0, 0.0
         return (
             False,
-            float(ctrl.get("left_trigger_value", 0.0)),
-            float(ctrl.get("right_trigger_value", 0.0)),
+            float(ctrl.get("left_trigger_value", missing_trigger)),
+            float(ctrl.get("right_trigger_value", missing_trigger)),
             float(ctrl.get("left_squeeze_value", 0.0)),
             float(ctrl.get("right_squeeze_value", 0.0)),
         )
@@ -856,9 +865,14 @@ class PicoReader:
             t_monotonic = time.monotonic()
             try:
                 body_poses = xrt.get_body_joints_pose()
+                try:
+                    triggers = (xrt.get_left_trigger(), xrt.get_right_trigger())
+                except RuntimeError:
+                    triggers = None
 
                 sample = {
                     "body_poses_np": np.array(body_poses),
+                    "triggers": triggers,
                     "timestamp_realtime": t_realtime,
                     "timestamp_monotonic": t_monotonic,
                     "timestamp_ns": stamp_ns,
@@ -1349,7 +1363,7 @@ class PoseStreamer:
             self.parent_indices, self.device, sample["body_poses_np"]
         )
         left_menu_button, left_trigger, right_trigger, left_grip, right_grip = get_controller_inputs(
-            self.reader
+            self.reader, missing_trigger=math.nan
         )
         # Get A and B button states for data collection control
         a_pressed, b_pressed, x_pressed, y_pressed = get_abxy_buttons(self.reader)
@@ -1508,6 +1522,7 @@ class PoseStreamer:
 
         # Only send if buffer is full and we're not waiting for fresh data
         if buffer_is_full and not self.buffer_cleared:
+            left_trigger, right_trigger = fresh_triggers(self.reader) or (math.nan, math.nan)
             numpy_data = {
                 "smpl_pose": np.stack((self.frame_buffer["smpl_pose"]), axis=0),
                 "smpl_joints": np.stack((self.frame_buffer["smpl_joints"]), axis=0),
@@ -1840,6 +1855,7 @@ class PlannerStreamer:
             vr_3pt_position = None
             vr_3pt_orientation = None
             vr_3pt_compliance = None
+            triggers = None
             if stream_mode == StreamMode.PLANNER_VR_3PT:
                 sample = self.reader.get_latest()
                 if sample is not None:
@@ -1856,7 +1872,7 @@ class PlannerStreamer:
                     right_trigger,
                     left_grip,
                     right_grip,
-                ) = get_controller_inputs(self.reader)
+                ) = get_controller_inputs(self.reader, missing_trigger=math.nan)
                 lh_joints, rh_joints = compute_hand_joints_from_inputs(
                     self.left_hand_ik_solver,
                     self.right_hand_ik_solver,
@@ -1867,6 +1883,7 @@ class PlannerStreamer:
                 )
                 left_hand_position = lh_joints.reshape(-1).astype(np.float32).tolist()
                 right_hand_position = rh_joints.reshape(-1).astype(np.float32).tolist()
+                triggers = fresh_triggers(self.reader)
 
             msg = build_planner_message(
                 mode_to_send.value,
@@ -1880,6 +1897,7 @@ class PlannerStreamer:
                 vr_3pt_position=vr_3pt_position,
                 vr_3pt_orientation=vr_3pt_orientation,
                 vr_3pt_compliance=vr_3pt_compliance,
+                triggers=triggers,
             )
             self.socket.send(msg)
         except Exception as e:

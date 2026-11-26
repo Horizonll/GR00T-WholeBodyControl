@@ -40,6 +40,11 @@
 #include "../math_utils.hpp"         // For float_to_double
 #include "../localmotion_kplanner.hpp" // For PlannerState, MovementState
 
+struct PicoGrip {
+    std::chrono::steady_clock::time_point received{};
+    std::array<bool, 2> closed{};
+};
+
 /**
  * @class InputInterface
  * @brief Abstract base class for all input sources (keyboard, gamepad, ZMQ, ROS2).
@@ -62,6 +67,9 @@ public:
 
     /// Virtual destructor ensures correct cleanup of derived classes.
     virtual ~InputInterface() = default;
+
+    // Accessed on the input thread after applying the current pose/planner packet.
+    virtual PicoGrip GetPicoGrip() const { return pico_grip_; }
 
     // ------------------------------------------------------------------
     // Pure-virtual interface
@@ -445,6 +453,7 @@ public:
     }
 
 protected:
+    PicoGrip pico_grip_{};
     /// Protected default constructor – only concrete sub-classes may instantiate.
     InputInterface() = default;
 

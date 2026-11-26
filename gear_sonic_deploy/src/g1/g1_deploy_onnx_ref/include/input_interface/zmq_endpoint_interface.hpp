@@ -571,6 +571,8 @@ public:
     }
 
     // Public method to trigger ZMQ mode toggle (for programmatic control from GamepadManager)
+    PicoGrip GetPicoGrip() const override { return use_zmq_stream ? pico_grip_ : PicoGrip{}; }
+
     void TriggerZMQToggle() {
         toggle_zmq_mode = true;
     }
@@ -586,6 +588,7 @@ private:
     /// Reset the streamed motion buffer, merger state, and protocol version.
     /// Called on construction, when toggling ZMQ mode, and on safety reset.
     void ResetStreamedMotion() {
+        pico_grip_ = {};
         motion_merger_.Reset();
         active_protocol_version_ = -1;  // Reset protocol version tracking
         // Update legacy fields for backward compatibility
@@ -631,6 +634,7 @@ private:
                                           int old_window_start,
                                           DataBuffer<HeadingState>& heading_state_buffer) {
         DecodeResult result;
+        pico_grip_ = {};
         if (buffered_buffers_.empty()) {
             std::cerr << "[ZMQEndpointInterface] No buffered buffers" << std::endl;
             return result;
@@ -1709,6 +1713,7 @@ private:
             // Protocol versions 2 and 3 both use encoder mode 2 (SMPL-based)
             merge_result.motion->SetEncodeMode(2);
         }
+        pico_grip_ = buffered_grip_;
         result.motion = merge_result.motion;
         result.window_start = merge_result.window_start;
         result.frame_offset_adjustment = merge_result.frame_offset_adjustment;
@@ -1826,7 +1831,10 @@ private:
         }
         
         has_new_data_ = true;
-        last_receive_time_ = std::chrono::steady_clock::now();
+        const auto received = std::chrono::steady_clock::now();
+        last_receive_time_ = received;
+        const auto grip = ZMQPackedMessageSubscriber::DecodeTriggerGrip(hdr, bufs);
+        buffered_grip_ = grip ? PicoGrip{received, *grip} : PicoGrip{};
         receive_count_++;
     }
     
@@ -1846,6 +1854,7 @@ private:
     // ------------------------------------------------------------------
     // Thread-safe data buffering (written by ZMQ subscriber thread, read by input thread)
     // ------------------------------------------------------------------
+    PicoGrip buffered_grip_{};  // guarded by data_mutex_
     mutable std::mutex data_mutex_;           ///< Guards the fields below.
     bool has_new_data_ = false;               ///< True when a new message is waiting to be decoded.
     ZMQPackedMessageSubscriber::DecodedHeader buffered_header_;  ///< Latest JSON header.

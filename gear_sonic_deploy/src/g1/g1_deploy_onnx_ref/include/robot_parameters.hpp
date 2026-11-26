@@ -38,6 +38,7 @@ const int G1_NUM_MOTOR = 29;
  * index (see G1JointIndex).
  */
 struct MotorCommand {
+    bool dex1_control = false;  // only active policy frames may drive internal grippers
     std::array<float, G1_NUM_MOTOR> q_target = {};   ///< Target position (rad).
     std::array<float, G1_NUM_MOTOR> dq_target = {};  ///< Target velocity (rad/s).
     std::array<float, G1_NUM_MOTOR> kp = {};          ///< Position gain (Nm/rad).

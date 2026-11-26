@@ -135,6 +135,7 @@
 
 // Dex3 hands
 #include "../include/dex3_hands.hpp"
+#include "../include/dex1_grippers.hpp"
 
 // Error monitor
 #include "../include/error_monitor.hpp"
@@ -283,6 +284,9 @@ class G1Deploy {
     
     // Dex3 hands manager
     Dex3Hands dex3_hands_;
+    bool dex1_internal_;
+    Dex1Grippers dex1_;
+    DataBuffer<PicoGrip> pico_grip_buffer_;
 
     // Motor error monitor (tracks fault state transitions)
     ErrorMonitor error_monitor_;
@@ -2180,7 +2184,7 @@ class G1Deploy {
       bool enable_motion_recording = false,
       std::array<double, 3> initial_compliance = {0.05, 0.05, 0.0},
       double initial_max_close_ratio = 1.0,
-      MotorGainScaleConfig motor_gain_scales = {})
+      MotorGainScaleConfig motor_gain_scales = {}, bool dex1_internal = false)
       : time_(0.0),
         publish_dt_(0.002),
         control_dt_(0.02),
@@ -2191,6 +2195,7 @@ class G1Deploy {
         mode_pr_(Mode::PR),
         mode_machine_(0),
         disable_crc_check_(disable_crc_check),
+        dex1_internal_(dex1_internal),
         program_state_(ProgramState::INIT),
         motor_gain_scales_(motor_gain_scales),
         last_action {0.0},
@@ -2218,7 +2223,7 @@ class G1Deploy {
       ChannelFactory::Instance()->Init(0, networkInterface);
 
       // Initialize Dex3 hands (ChannelFactory already initialized above)
-      dex3_hands_.initialize("");
+      if (!dex1_internal_) dex3_hands_.initialize("");
 
       audio_thread_ = std::make_unique<AudioThread>();
 
@@ -2696,7 +2701,8 @@ class G1Deploy {
       dds_low_command.mode_pr() = static_cast<uint8_t>(mode_pr_);
       dds_low_command.mode_machine() = mode_machine_;
 
-      const std::shared_ptr<const MotorCommand> mc = motor_command_buffer_.GetDataWithTime().data;
+      const auto command = motor_command_buffer_.GetDataWithTime();
+      const auto& mc = command.data;
       if (mc) {
         for (size_t i = 0; i < G1_NUM_MOTOR; i++) {
           dds_low_command.motor_cmd().at(i).mode() = 1; // 1:Enable, 0:Disable
@@ -2707,12 +2713,26 @@ class G1Deploy {
           dds_low_command.motor_cmd().at(i).kd() = mc->kd.at(i);
         }
 
+        if (dex1_internal_) {
+          const auto grip = pico_grip_buffer_.GetDataWithTime().data;
+          const auto state = low_state_buffer_.GetDataWithTime();
+          const auto now = std::chrono::steady_clock::now();
+          if (mc->dex1_control && !operator_state.stop && grip && state.data &&
+              now - command.timestamp <= LOW_STATE_LATE_THRESHOLD &&
+              now - grip->received <= STREAMING_DATA_ABSENT_THRESHOLD &&
+              now - state.timestamp <= LOW_STATE_LATE_THRESHOLD) {
+            dex1_.write(dds_low_command, *state.data, grip->closed);
+          } else {
+            dex1_.reset();
+          }
+        }
+
         dds_low_command.crc() = Crc32Core((uint32_t*)&dds_low_command, (sizeof(dds_low_command) >> 2) - 1);
         lowcmd_publisher_->Write(dds_low_command);
       }
 
       // Publish Dex3 hand commands at the same publish cadence
-      dex3_hands_.writeOnce();
+      if (!dex1_internal_) dex3_hands_.writeOnce();
     }
 
     /// Gracefully stop all threads and send a damping-only command.
@@ -3162,6 +3182,7 @@ class G1Deploy {
         motor_command_tmp.dq_target.at(i) = 0.0;
       }
       apply_motor_gain_scales(motor_gain_scales_, motor_command_tmp);
+      motor_command_tmp.dex1_control = dex1_internal_;
       motor_command_buffer_.SetData(motor_command_tmp);
       return true;
     }
@@ -3494,6 +3515,11 @@ class G1Deploy {
         PlannerState planner_state{false, false};
         input_interface_->handle_input(motion_reader_, current_motion_, current_frame_, operator_state,
                                       reinitialize_heading_, heading_state_buffer_, has_planner, planner_state, movement_state_buffer_, current_motion_mutex_, report_temperature_);
+      }
+
+      if (dex1_internal_) {
+        pico_grip_buffer_.SetData(operator_state.play && !operator_state.stop
+            ? input_interface_->GetPicoGrip() : PicoGrip{});
       }
 
       if (playback_input_file_ && program_state_ == ProgramState::CONTROL) {
@@ -4187,6 +4213,7 @@ int main(int argc, char const* argv[]) {
     std::cout << "  --set-compliance <value>: set initial VR 3-point compliance (0.01=rigid, 0.5=compliant; default: [0.5, 0.5, 0.0])" << std::endl;
     std::cout << "                                 Can specify 1 value (both hands) or 3 values (left_wrist,right_wrist,head)" << std::endl;
     std::cout << "                                 Keyboard controls: g/h = left hand +/- 0.1, b/v = right hand +/- 0.1" << std::endl;
+    std::cout << "  --dex1-internal: use PICO triggers for G1 internal Dex1 grippers (slots 31/33)" << std::endl;
     std::cout << "  --max-close-ratio <value>: set initial hand max close ratio (0.2-1.0; default: 1.0 = full closure)" << std::endl;
     std::cout << "                             0.2 = limited (80% open), 1.0 = full closure allowed" << std::endl;
     std::cout << "                             Keyboard controls: x/c = +/- 0.1 (always available)" << std::endl;
@@ -4227,6 +4254,7 @@ int main(int argc, char const* argv[]) {
   int zmq_port = 5556;
   std::string zmq_topic = "pose";
   bool zmq_conflate = false;  // default off; enable with --zmq-conflate
+  bool dex1_internal = false;
   bool zmq_verbose = false;
   bool enableMotionRecording = false;  // default off; enable with --enable-motion-recording
   int zmq_out_port = 5557;
@@ -4453,6 +4481,8 @@ int main(int argc, char const* argv[]) {
         std::cerr << "Error: --set-compliance requires a value argument" << std::endl;
         exit(1);
       }
+    } else if (std::string(argv[i]) == "--dex1-internal") {
+      dex1_internal = true;
     } else if (std::string(argv[i]) == "--max-close-ratio") {
       if (i + 1 < argc) {
         try {
@@ -4476,6 +4506,10 @@ int main(int argc, char const* argv[]) {
     }
   }
 
+  if (dex1_internal && inputType != "zmq_manager" && inputType != "zmq") {
+    std::cerr << "--dex1-internal requires --input-type zmq_manager or zmq" << std::endl;
+    return 1;
+  }
   std::cout << "[DEBUG] Creating G1Deploy object..." << std::endl;
   G1Deploy custom(
     networkInterface,
@@ -4506,7 +4540,8 @@ int main(int argc, char const* argv[]) {
     enableMotionRecording,
     initial_compliance,
     initial_max_close_ratio,
-    motor_gain_scales
+    motor_gain_scales,
+    dex1_internal
   );
   std::cout << "[DEBUG] G1Deploy object created successfully!" << std::endl;
   

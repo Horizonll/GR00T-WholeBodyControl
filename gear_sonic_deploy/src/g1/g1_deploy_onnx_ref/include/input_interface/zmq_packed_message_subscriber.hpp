@@ -52,6 +52,8 @@
 #include <string>
 #include <thread>
 #include <functional>
+#include <optional>
+#include <array>
 #include <vector>
 #include <algorithm>
 
@@ -173,6 +175,30 @@ class ZMQPackedMessageSubscriber {
         return native_le != data_le;
       }
     };
+
+    static std::optional<std::array<bool, 2>> DecodeTriggerGrip(
+        const DecodedHeader& header, const std::vector<BufferView>& buffers) {
+      std::array<bool, 2> closed{}, seen{};
+      for (size_t i = 0; i < header.fields.size() && i < buffers.size(); ++i) {
+        const auto& f = header.fields[i];
+        if (f.name != "left_trigger" && f.name != "right_trigger") continue;
+        const size_t side = f.name == "right_trigger" ? 1 : 0;
+        if (seen[side] || f.dtype != "f32" || f.shape.size() != 1 || f.shape[0] != 1 ||
+            buffers[i].size != sizeof(float)) return std::nullopt;
+        uint32_t bits;
+        std::memcpy(&bits, buffers[i].data, sizeof(bits));
+        if (header.NeedsByteSwap()) bits = byte_swap(bits);
+        // Reject IEEE-754 NaN/Inf even in the release build with -ffast-math.
+        if ((bits & 0x7f800000u) == 0x7f800000u) return std::nullopt;
+        float trigger;
+        std::memcpy(&trigger, &bits, sizeof(trigger));
+        if (trigger < 0.0f || trigger > 1.0f) return std::nullopt;
+        closed[side] = trigger > 0.5f;
+        seen[side] = true;
+      }
+      if (!seen[0] || !seen[1]) return std::nullopt;
+      return closed;
+    }
 
     /// Register a callback to be invoked (on the background thread) for each
     /// successfully decoded packed message.  Must be called before Start().
